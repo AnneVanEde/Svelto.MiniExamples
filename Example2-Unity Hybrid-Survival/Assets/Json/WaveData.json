@@ -1,0 +1,10 @@
+{
+  "array": [
+
+    { "waveData": [ 2, 0, 0 ] },
+    { "waveData": [ 3, 2, 0 ] },
+    { "waveData": [ 6, 4, 0 ] },
+    { "waveData": [ 8, 6, 1 ] },
+    { "waveData": [ 10, 8, 2 ] }
+  ]
+}

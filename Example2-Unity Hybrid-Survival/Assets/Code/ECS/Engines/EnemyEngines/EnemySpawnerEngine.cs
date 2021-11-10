@@ -8,26 +8,29 @@ namespace Svelto.ECS.Example.Survive.Enemies
     public class EnemySpawnerEngine : IQueryingEntitiesEngine, IReactOnSwap<EnemyEntityViewComponent>, IStepEngine
     {
         const int SECONDS_BETWEEN_SPAWNS = 1;
-        const int NUMBER_OF_ENEMIES_TO_SPAWN   = 12;
+        const int NUMBER_OF_ENEMIES_TO_SPAWN = 12;
 
         public EnemySpawnerEngine(EnemyFactory enemyFactory, IEntityFunctions entityFunctions)
         {
-            _entityFunctions      = entityFunctions;
-            _enemyFactory         = enemyFactory;
-            _numberOfEnemyToSpawn = NUMBER_OF_ENEMIES_TO_SPAWN;
+            _currentWave = -1;
+            _numberOfEnemiesToDefeat = 0;
+
+            _entityFunctions = entityFunctions;
+            _enemyFactory = enemyFactory;
+
         }
 
         public EntitiesDB entitiesDB { private get; set; }
-        public void       Ready()    { _intervaledTick = IntervaledTick(); }
-        public void       Step()     { _intervaledTick.MoveNext(); }
-        public string     name       => nameof(EnemySpawnerEngine);
+        public void Ready() { _intervaledTick = IntervaledTick(); }
+        public void Step() { _intervaledTick.MoveNext(); }
+        public string name => nameof(EnemySpawnerEngine);
 
         public void MovedTo(ref EnemyEntityViewComponent entityComponent, ExclusiveGroupStruct previousGroup, EGID egid)
         {
             //is the enemy dead?
             if (egid.groupID.FoundIn(DeadEnemies.Groups))
             {
-                _numberOfEnemyToSpawn++;
+                _numberOfEnemiesToDefeat--;
             }
         }
 
@@ -42,21 +45,27 @@ namespace Svelto.ECS.Example.Survive.Enemies
             //Also note that I am loading the data only once per application run, outside the 
             //main loop. You can always exploit this pattern when you know that the data you need
             //to use will never change            
-            IEnumerator<JSonEnemySpawnData[]>  enemiestoSpawnJsons  = ReadEnemySpawningDataServiceRequest();
+            IEnumerator<JSonEnemySpawnData[]> enemiestoSpawnJsons = ReadEnemySpawningDataServiceRequest();
             IEnumerator<JSonEnemyAttackData[]> enemyAttackDataJsons = ReadEnemyAttackDataServiceRequest();
+            IEnumerator<JSonWaveData[]> waveDataJsons = ReadWaveDataServiceRequest();
 
             while (enemiestoSpawnJsons.MoveNext())
                 yield return null;
             while (enemyAttackDataJsons.MoveNext())
                 yield return null;
+            while (waveDataJsons.MoveNext())
+                yield return null;
 
-            var enemiestoSpawn  = enemiestoSpawnJsons.Current;
+            var enemiestoSpawn = enemiestoSpawnJsons.Current;
             var enemyAttackData = enemyAttackDataJsons.Current;
+            var waveData = waveDataJsons.Current;
 
             var spawningTimes = new float[enemiestoSpawn.Length];
 
-            for (var i = enemiestoSpawn.Length - 1; i >= 0 && _numberOfEnemyToSpawn > 0; --i)
+            for (int i = 0; i < enemiestoSpawn.Length; i++)
+            {
                 spawningTimes[i] = enemiestoSpawn[i].enemySpawnData.spawnTime;
+            }
 
             while (true)
             {
@@ -67,12 +76,24 @@ namespace Svelto.ECS.Example.Survive.Enemies
                 while (waitForSecondsEnumerator.MoveNext())
                     yield return null;
 
-                //cycle around the enemies to spawn and check if it can be spawned
-                for (var i = enemiestoSpawn.Length - 1; i >= 0 && _numberOfEnemyToSpawn > 0; --i)
+                if (_numberOfEnemiesToDefeat == 0)
                 {
-                    if (spawningTimes[i] <= 0.0f)
+                    _currentWave++;
+                    for (int enemyType = 0; enemyType < enemiestoSpawn.Length; enemyType++)
                     {
-                        var spawnData = enemiestoSpawn[i];
+                        _numberOfEnemiesToDefeat += waveData[_currentWave].waveData[enemyType];
+                    }
+                    Debug.Log(_numberOfEnemiesToDefeat);
+                }
+
+
+                //cycle around the enemies to spawn and check if it can be spawned
+                for (int enemyType = 0; enemyType < enemiestoSpawn.Length; enemyType++)
+                {
+                    // instead of 1 int for all enemies, get three ints for each type of enemy
+                    if (waveData[_currentWave].waveData[enemyType] > 0 && spawningTimes[enemyType] <= 0.0f)
+                    {
+                        var spawnData = enemiestoSpawn[enemyType];
 
                         //In this example every kind of enemy generates the same list of EntityViews
                         //therefore I always use the same EntityDescriptor. However if the 
@@ -82,8 +103,9 @@ namespace Svelto.ECS.Example.Survive.Enemies
                         //in my articles.
                         var EnemyAttackComponent = new EnemyAttackComponent
                         {
-                            attackDamage      = enemyAttackData[i].enemyAttackData.attackDamage
-                          , timeBetweenAttack = enemyAttackData[i].enemyAttackData.timeBetweenAttacks
+                            attackDamage = enemyAttackData[enemyType].enemyAttackData.attackDamage
+                          ,
+                            timeBetweenAttack = enemyAttackData[enemyType].enemyAttackData.timeBetweenAttacks
                         };
 
                         //have we got a compatible entity previously disabled and can it be reused?
@@ -93,7 +115,7 @@ namespace Svelto.ECS.Example.Survive.Enemies
                         //For the sake of this example, we don't need a different enemy group for each enemy type
                         //however since we need to fetch the right prefab from the pool (because of the graphic)
                         //using a range group for pooling helps.
-                        var fromGroupId = ECSGroups.EnemiesToRecycleGroups + (uint) spawnData.enemySpawnData.targetType;
+                        var fromGroupId = ECSGroups.EnemiesToRecycleGroups + (uint)spawnData.enemySpawnData.targetType;
 
                         if (entitiesDB.HasAny<EnemyEntityViewComponent>(fromGroupId))
                             ReuseEnemy(fromGroupId, spawnData);
@@ -104,11 +126,11 @@ namespace Svelto.ECS.Example.Survive.Enemies
                                 yield return null;
                         }
 
-                        spawningTimes[i] = spawnData.enemySpawnData.spawnTime;
-                        _numberOfEnemyToSpawn--;
+                        spawningTimes[enemyType] = spawnData.enemySpawnData.spawnTime;
+                        waveData[_currentWave].waveData[enemyType]--;
                     }
 
-                    spawningTimes[i] -= SECONDS_BETWEEN_SPAWNS;
+                    spawningTimes[enemyType] -= SECONDS_BETWEEN_SPAWNS;
                 }
             }
         }
@@ -134,11 +156,11 @@ namespace Svelto.ECS.Example.Survive.Enemies
 
                 var spawnInfo = spawnData.enemySpawnData.spawnPoint;
 
-                enemyViews[0].transformComponent.position           = spawnInfo;
-                enemyViews[0].movementComponent.navMeshEnabled      = true;
+                enemyViews[0].transformComponent.position = spawnInfo;
+                enemyViews[0].movementComponent.navMeshEnabled = true;
                 enemyViews[0].movementComponent.setCapsuleAsTrigger = false;
-                enemyViews[0].layerComponent.layer                  = GAME_LAYERS.ENEMY_LAYER;
-                enemyViews[0].animationComponent.reset              = true;
+                enemyViews[0].layerComponent.layer = GAME_LAYERS.ENEMY_LAYER;
+                enemyViews[0].animationComponent.reset = true;
 
                 _entityFunctions.SwapEntityGroup<EnemyEntityDescriptor>(enemyViews[0].ID, AliveEnemies.BuildGroup);
             }
@@ -168,10 +190,24 @@ namespace Svelto.ECS.Example.Survive.Enemies
             yield return enemiesAttackData;
         }
 
-        readonly EnemyFactory     _enemyFactory;
+        static IEnumerator<JSonWaveData[]> ReadWaveDataServiceRequest()
+        {
+            var json = Addressables.LoadAssetAsync<TextAsset>("WaveData");
+
+            while (json.IsDone == false)
+                yield return null;
+
+            var waveData = JsonHelper.getJsonArray<JSonWaveData>(json.Result.text);
+
+            yield return waveData;
+        }
+
+        readonly EnemyFactory _enemyFactory;
         readonly IEntityFunctions _entityFunctions;
 
-        int         _numberOfEnemyToSpawn;
         IEnumerator _intervaledTick;
+
+        int _currentWave;
+        int _numberOfEnemiesToDefeat;
     }
 }
